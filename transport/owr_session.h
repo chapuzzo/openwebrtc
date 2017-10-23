@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -35,6 +37,20 @@
 #include <glib-object.h>
 
 G_BEGIN_DECLS
+
+/* Note: OwrIceState mirrors NiceComponentState for our API */
+typedef enum {
+    OWR_ICE_STATE_DISCONNECTED,
+    OWR_ICE_STATE_GATHERING,
+    OWR_ICE_STATE_CONNECTING,
+    OWR_ICE_STATE_CONNECTED,
+    OWR_ICE_STATE_READY,
+    OWR_ICE_STATE_FAILED,
+    OWR_ICE_STATE_LAST
+} OwrIceState;
+
+#define OWR_TYPE_ICE_STATE (owr_ice_state_get_type())
+GType owr_ice_state_get_type(void);
 
 #define OWR_TYPE_SESSION            (owr_session_get_type())
 #define OWR_SESSION(obj)            (G_TYPE_CHECK_INSTANCE_CAST((obj), OWR_TYPE_SESSION, OwrSession))
@@ -73,6 +89,12 @@ GType owr_session_get_type(void) G_GNUC_CONST;
 
 void owr_session_add_remote_candidate(OwrSession *session, OwrCandidate *candidate);
 void owr_session_force_remote_candidate(OwrSession *session, OwrCandidate *candidate);
+void owr_session_force_candidate_pair(OwrSession *session, OwrComponentType ctype,
+        OwrCandidate *local_candidate, OwrCandidate *remote_candidate);
+void owr_session_set_local_port(OwrSession *session, OwrComponentType ctype, guint port);
+
+void _owr_session_get_candidate_pair(OwrSession *session, OwrComponentType ctype,
+        OwrCandidate **local, OwrCandidate **remote);
 
 G_END_DECLS
 

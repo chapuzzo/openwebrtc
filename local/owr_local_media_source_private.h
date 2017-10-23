@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -40,8 +42,8 @@
 
 G_BEGIN_DECLS
 
-OwrLocalMediaSource *_owr_local_media_source_new(gchar *name, OwrMediaType media_type,
-    OwrSourceType source_type);
+OwrLocalMediaSource *_owr_local_media_source_new_cached(gint device_index,
+    const gchar *name, OwrMediaType media_type, OwrSourceType source_type);
 void _owr_local_media_source_set_capture_device_index(OwrLocalMediaSource *source, guint index);
 
 G_END_DECLS

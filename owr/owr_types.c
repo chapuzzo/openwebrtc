@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -87,4 +89,21 @@ GType owr_source_type_get_type(void)
     }
 
     return id;
+}
+
+GType owr_adaptation_type_get_type(void)
+{
+    static const GEnumValue types[] = {
+        {OWR_ADAPTATION_TYPE_DISABLED, "No adaptation (disabled)", "disabled"},
+        {OWR_ADAPTATION_TYPE_SCREAM, "Scream", "scream"},
+        {0, NULL, NULL}
+    };
+static volatile GType id = 0;
+
+if (g_once_init_enter((gsize *)&id)) {
+    GType _id = g_enum_register_static("OwrAdaptationTypes", types);
+    g_once_init_leave((gsize *)&id, _id);
+}
+
+return id;
 }

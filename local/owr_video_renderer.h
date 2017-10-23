@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -59,6 +61,10 @@ struct _OwrVideoRendererClass {
 GType owr_video_renderer_get_type(void) G_GNUC_CONST;
 
 OwrVideoRenderer *owr_video_renderer_new(const gchar *tag);
+
+typedef struct _GstContext OwrGstContext;
+typedef OwrGstContext * (* OwrVideoRendererRequestContextCallback) (const gchar *context_type, gpointer user_data);
+void owr_video_renderer_set_request_context_callback(OwrVideoRenderer *renderer, OwrVideoRendererRequestContextCallback callback, gpointer user_data, GDestroyNotify destroy_data);
 
 G_END_DECLS
 

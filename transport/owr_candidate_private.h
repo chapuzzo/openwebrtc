@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -31,6 +33,8 @@
 #include <agent.h>
 
 #ifndef __GTK_DOC_IGNORE__
+
+#define OWR_COMPONENT_MAX (OWR_COMPONENT_TYPE_RTCP + 1)
 
 G_BEGIN_DECLS
 

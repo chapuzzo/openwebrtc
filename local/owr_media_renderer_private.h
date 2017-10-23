@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -31,10 +33,12 @@
 #define __OWR_MEDIA_RENDERER_PRIVATE_H__
 
 #include "owr_media_renderer.h"
+#include <gst/gst.h>
 
 G_BEGIN_DECLS
 
 void _owr_media_renderer_set_sink(OwrMediaRenderer *renderer, gpointer sink);
+GstPipeline * _owr_media_renderer_get_pipeline(OwrMediaRenderer *renderer);
 
 G_END_DECLS
 

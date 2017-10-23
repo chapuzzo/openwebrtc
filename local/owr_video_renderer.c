@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -31,33 +33,32 @@
 #include "config.h"
 #endif
 #include "owr_video_renderer.h"
-#include "owr_video_renderer_private.h"
 
 #include "owr_media_renderer_private.h"
-
 #include "owr_private.h"
+#include "owr_utils.h"
+#include "owr_video_renderer_private.h"
 #include "owr_window_registry.h"
 #include "owr_window_registry_private.h"
 
-#include <string.h>
-
 #include <gst/video/videooverlay.h>
+
+#include <string.h>
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
 
-#define VIDEO_SINK "glimagesink"
+GST_DEBUG_CATEGORY_EXTERN(_owrvideorenderer_debug);
+#define GST_CAT_DEFAULT _owrvideorenderer_debug
 
-#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE && !TARGET_IPHONE_SIMULATOR && !defined(__arm64__))
-#define VIDEO_CONVERT "ercolorspace"
-#else
-#define VIDEO_CONVERT "videoconvert"
-#endif
+#define VIDEO_SINK "glimagesink"
 
 #define DEFAULT_WIDTH 0
 #define DEFAULT_HEIGHT 0
 #define DEFAULT_MAX_FRAMERATE 0.0
+#define DEFAULT_ROTATION 0
+#define DEFAULT_MIRROR FALSE
 #define DEFAULT_TAG NULL
 
 #define OWR_VIDEO_RENDERER_GET_PRIVATE(obj)    (G_TYPE_INSTANCE_GET_PRIVATE((obj), OWR_TYPE_VIDEO_RENDERER, OwrVideoRendererPrivate))
@@ -71,6 +72,8 @@ enum {
     PROP_WIDTH,
     PROP_HEIGHT,
     PROP_MAX_FRAMERATE,
+    PROP_ROTATION,
+    PROP_MIRROR,
     PROP_TAG,
     N_PROPERTIES
 };
@@ -85,12 +88,17 @@ static void owr_video_renderer_constructed(GObject *object);
 
 static GstElement *owr_video_renderer_get_element(OwrMediaRenderer *renderer, guintptr window_handle);
 static GstCaps *owr_video_renderer_get_caps(OwrMediaRenderer *renderer);
+static GstElement *owr_video_renderer_get_sink(OwrMediaRenderer *renderer);
 
 struct _OwrVideoRendererPrivate {
     guint width;
     guint height;
     gdouble max_framerate;
+    gint rotation;
+    gboolean mirror;
     gchar *tag;
+    GMutex closure_mutex;
+    GClosure *request_context;
 };
 
 static void owr_video_renderer_finalize(GObject *object)
@@ -102,6 +110,13 @@ static void owr_video_renderer_finalize(GObject *object)
         _owr_window_registry_unregister_renderer(owr_window_registry_get(), priv->tag, renderer);
         g_free(priv->tag);
         priv->tag = NULL;
+    }
+
+    g_mutex_clear(&priv->closure_mutex);
+
+    if (priv->request_context) {
+        g_closure_unref(priv->request_context);
+        priv->request_context = NULL;
     }
 
     G_OBJECT_CLASS(owr_video_renderer_parent_class)->finalize(object);
@@ -126,6 +141,14 @@ static void owr_video_renderer_class_init(OwrVideoRendererClass *klass)
         "Maximum video frames per second", 0.0, G_MAXDOUBLE,
         DEFAULT_MAX_FRAMERATE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
 
+    obj_properties[PROP_ROTATION] = g_param_spec_uint("rotation", "rotation",
+        "Video rotation in multiple of 90 degrees", 0, 3, DEFAULT_ROTATION,
+        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+    obj_properties[PROP_MIRROR] = g_param_spec_boolean("mirror", "mirror",
+        "Whether the video should be mirrored around the y-axis", DEFAULT_MIRROR,
+        G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
     obj_properties[PROP_TAG] = g_param_spec_string("tag", "tag",
         "Tag referencing the window widget into which to draw video (default: NULL, create a new window)",
         DEFAULT_TAG, G_PARAM_CONSTRUCT_ONLY | G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
@@ -137,6 +160,7 @@ static void owr_video_renderer_class_init(OwrVideoRendererClass *klass)
     gobject_class->finalize = owr_video_renderer_finalize;
 
     media_renderer_class->get_caps = (void *(*)(OwrMediaRenderer *))owr_video_renderer_get_caps;
+    media_renderer_class->get_sink = (void *(*)(OwrMediaRenderer *))owr_video_renderer_get_sink;
 
     g_object_class_install_properties(gobject_class, N_PROPERTIES, obj_properties);
 }
@@ -150,6 +174,10 @@ static void owr_video_renderer_init(OwrVideoRenderer *renderer)
     priv->height = DEFAULT_HEIGHT;
     priv->max_framerate = DEFAULT_MAX_FRAMERATE;
     priv->tag = DEFAULT_TAG;
+    priv->rotation = DEFAULT_ROTATION;
+    priv->mirror = DEFAULT_MIRROR;
+    g_mutex_init(&priv->closure_mutex);
+    priv->request_context = NULL;
 }
 
 static void owr_video_renderer_set_property(GObject *object, guint property_id,
@@ -169,6 +197,12 @@ static void owr_video_renderer_set_property(GObject *object, guint property_id,
         break;
     case PROP_MAX_FRAMERATE:
         priv->max_framerate = g_value_get_double(value);
+        break;
+    case PROP_ROTATION:
+        priv->rotation = g_value_get_uint(value);
+        break;
+    case PROP_MIRROR:
+        priv->mirror = g_value_get_boolean(value);
         break;
     case PROP_TAG:
         g_free(priv->tag);
@@ -200,6 +234,12 @@ static void owr_video_renderer_get_property(GObject *object, guint property_id,
         break;
     case PROP_MAX_FRAMERATE:
         g_value_set_double(value, priv->max_framerate);
+        break;
+    case PROP_ROTATION:
+        g_value_set_uint(value, priv->rotation);
+        break;
+    case PROP_MIRROR:
+        g_value_set_boolean(value, priv->mirror);
         break;
     case PROP_TAG:
         g_value_set_string(value, priv->tag);
@@ -241,14 +281,43 @@ static void renderer_disabled(OwrMediaRenderer *renderer, GParamSpec *pspec, Gst
     g_object_set(balance, "saturation", (gdouble)!disabled, "brightness", (gdouble)-disabled, NULL);
 }
 
+static void update_flip_method(OwrMediaRenderer *renderer, GParamSpec *pspec, GstElement *flip)
+{
+    guint rotation = 0;
+    gboolean mirror = FALSE;
+    gint flip_method;
+
+    g_return_if_fail(OWR_IS_MEDIA_RENDERER(renderer));
+    g_return_if_fail(G_IS_PARAM_SPEC(pspec) || !pspec);
+    g_return_if_fail(GST_IS_ELEMENT(flip));
+
+    g_object_get(renderer, "rotation", &rotation, "mirror", &mirror, NULL);
+    flip_method = _owr_rotation_and_mirror_to_video_flip_method(rotation, mirror);
+    g_object_set(flip, "method", flip_method, NULL);
+}
+
+static void disable_last_sample_on_sink(const GValue *item, gpointer data)
+{
+    GstElement *element = GST_ELEMENT_CAST(g_value_get_object(item));
+    OWR_UNUSED(data);
+
+    if (GST_IS_BIN(element)) {
+        GstIterator *iterator = gst_bin_iterate_sinks(GST_BIN(element));
+        gst_iterator_foreach(iterator, (GstIteratorForeachFunction) disable_last_sample_on_sink, NULL);
+        gst_iterator_free(iterator);
+    } else
+        g_object_set(element, "enable-last-sample", FALSE, NULL);
+}
+
 static GstElement *owr_video_renderer_get_element(OwrMediaRenderer *renderer, guintptr window_handle)
 {
     OwrVideoRenderer *video_renderer;
     OwrVideoRendererPrivate *priv;
     GstElement *renderer_bin;
-    GstElement *balance, *sink;
+    GstElement *upload, *convert, *balance, *flip, *sink;
     GstPad *ghostpad, *sinkpad;
     gchar *bin_name;
+    GValue value = G_VALUE_INIT;
 
     g_assert(renderer);
     video_renderer = OWR_VIDEO_RENDERER(renderer);
@@ -258,30 +327,56 @@ static GstElement *owr_video_renderer_get_element(OwrMediaRenderer *renderer, gu
     renderer_bin = gst_bin_new(bin_name);
     g_free(bin_name);
 
-    balance = gst_element_factory_make("videobalance", "video-renderer-balance");
+    upload = gst_element_factory_make("glupload", "video-renderer-upload");
+    convert = gst_element_factory_make("glcolorconvert", "video-renderer-convert");
+
+    balance = gst_element_factory_make("glcolorbalance", "video-renderer-balance");
     g_signal_connect_object(renderer, "notify::disabled", G_CALLBACK(renderer_disabled),
         balance, 0);
     renderer_disabled(renderer, NULL, balance);
 
-    sink = gst_element_factory_make(VIDEO_SINK, "video-renderer-sink");
+    flip = gst_element_factory_make("glvideoflip", "video-renderer-flip");
+    if (!flip) {
+        g_warning("The glvideoflip GStreamer element isn't available. Video mirroring and rotation functionalities are thus disabled.");
+    } else {
+        g_signal_connect_object(renderer, "notify::rotation", G_CALLBACK(update_flip_method), flip, 0);
+        g_signal_connect_object(renderer, "notify::mirror", G_CALLBACK(update_flip_method), flip, 0);
+        update_flip_method(renderer, NULL, flip);
+    }
+
+    sink = OWR_MEDIA_RENDERER_GET_CLASS(renderer)->get_sink(renderer);
     g_assert(sink);
+
+    g_value_init(&value, GST_TYPE_OBJECT);
+    g_value_set_object(&value, gst_object_ref(sink));
+    disable_last_sample_on_sink(&value, NULL);
+    g_value_unset(&value);
+
     if (priv->tag) {
         GstElement *sink_element = GST_IS_BIN(sink) ?
             gst_bin_get_by_interface(GST_BIN(sink), GST_TYPE_VIDEO_OVERLAY) : sink;
-        if (GST_IS_ELEMENT(sink_element) && GST_IS_VIDEO_OVERLAY(sink)) {
+        if (GST_IS_ELEMENT(sink_element) && GST_IS_VIDEO_OVERLAY(sink))
             gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), window_handle);
-        } else {
+        else
             g_warn_if_reached();
-        }
         if (GST_IS_BIN(sink))
             g_object_unref(sink_element);
     }
 
-    gst_bin_add_many(GST_BIN(renderer_bin), balance, sink, NULL);
+    gst_bin_add_many(GST_BIN(renderer_bin), upload, convert, balance, sink, NULL);
 
-    LINK_ELEMENTS(balance, sink);
+    LINK_ELEMENTS(upload, convert);
+    LINK_ELEMENTS(convert, balance);
 
-    sinkpad = gst_element_get_static_pad(balance, "sink");
+    if (flip) {
+        gst_bin_add(GST_BIN(renderer_bin), flip);
+        LINK_ELEMENTS(balance, flip);
+        LINK_ELEMENTS(flip, sink);
+    } else {
+        LINK_ELEMENTS(balance, sink);
+    }
+
+    sinkpad = gst_element_get_static_pad(upload, "sink");
     g_assert(sinkpad);
     ghostpad = gst_ghost_pad_new("sink", sinkpad);
     gst_pad_set_active(ghostpad, TRUE);
@@ -291,18 +386,90 @@ static GstElement *owr_video_renderer_get_element(OwrMediaRenderer *renderer, gu
     return renderer_bin;
 }
 
+/**
+ * OwrVideoRendererRequestContextCallback:
+ * @context_type: (transfer none): the context type
+ * @user_data: (allow-none): the data passed to owr_video_renderer_set_request_context_callback
+ *
+ * Prototype for the callback passed to owr_video_renderer_set_request_context_callback()
+ *
+ * Returns: (transfer none): the GstContext
+ */
+
+/**
+ * owr_video_renderer_set_request_context_callback: Configure the GClosure to
+ * invoke when a GL context is required by the GStreamer pipeline running the
+ * renderer.
+ *
+ * @renderer:
+ * @callback: function providing the GstContext as return value. The parameters passed are a const gchar* representing the context type and the @user_data gpointer.
+ * @user_data: extra data passed as first argument of the @callback.
+ * @destroy_data: function invoked when disposing the user_data of the GClosure.
+ */
+void owr_video_renderer_set_request_context_callback(OwrVideoRenderer *renderer, OwrVideoRendererRequestContextCallback callback, gpointer user_data, GDestroyNotify destroy_data)
+{
+    g_mutex_lock(&renderer->priv->closure_mutex);
+    if (renderer->priv->request_context)
+        g_closure_unref(renderer->priv->request_context);
+
+    renderer->priv->request_context = g_cclosure_new(G_CALLBACK(callback), user_data, (GClosureNotify) destroy_data);
+    g_closure_set_marshal(renderer->priv->request_context, g_cclosure_marshal_generic);
+    g_mutex_unlock(&renderer->priv->closure_mutex);
+}
+
+static GstBusSyncReply _owr_handle_gst_sync_message(GstBus *bus, GstMessage *message, gpointer user_data)
+{
+    OwrVideoRenderer *renderer = OWR_VIDEO_RENDERER(user_data);
+
+    OWR_UNUSED(bus);
+
+    if (renderer->priv->request_context == NULL)
+        return GST_BUS_PASS;
+
+    if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_NEED_CONTEXT) {
+        GstContext* context;
+        const gchar *context_type;
+        GValue result = G_VALUE_INIT;
+        GValue params[1] = { G_VALUE_INIT };
+
+        gst_message_parse_context_type(message, &context_type);
+        g_value_init(&result, G_TYPE_POINTER);
+        g_value_init(&params[0], G_TYPE_STRING);
+        g_value_set_string(&params[0], context_type);
+
+        g_mutex_lock(&renderer->priv->closure_mutex);
+        g_closure_invoke(renderer->priv->request_context, &result, 1, (const GValue*) &params, NULL);
+        g_mutex_unlock(&renderer->priv->closure_mutex);
+
+        context = (GstContext*) g_value_get_pointer(&result);
+        if (context) {
+            gst_element_set_context(GST_ELEMENT_CAST(GST_MESSAGE_SRC(message)), context);
+            return GST_BUS_DROP;
+        }
+    }
+    return GST_BUS_PASS;
+}
+
 static void owr_video_renderer_constructed(GObject *object)
 {
     OwrVideoRenderer *video_renderer;
     OwrVideoRendererPrivate *priv;
+    GstBus *bus;
+    GstPipeline *pipeline;
 
     video_renderer = OWR_VIDEO_RENDERER(object);
     priv = video_renderer->priv;
 
     /* If we have no tag, just directly create the sink */
-    if (!priv->tag) {
+    if (!priv->tag)
         _owr_media_renderer_set_sink(OWR_MEDIA_RENDERER(video_renderer), owr_video_renderer_get_element(OWR_MEDIA_RENDERER(video_renderer), 0));
-    }
+
+    pipeline = _owr_media_renderer_get_pipeline(OWR_MEDIA_RENDERER(video_renderer));
+    g_assert(pipeline);
+    bus = gst_pipeline_get_bus(pipeline);
+    gst_bus_set_sync_handler(bus, (GstBusSyncHandler) _owr_handle_gst_sync_message, video_renderer, NULL);
+    gst_object_unref(bus);
+    gst_object_unref(pipeline);
 
     G_OBJECT_CLASS(owr_video_renderer_parent_class)->constructed(object);
 }
@@ -320,6 +487,7 @@ static GstCaps *owr_video_renderer_get_caps(OwrMediaRenderer *renderer)
         NULL);
 
     caps = gst_caps_new_empty_simple("video/x-raw");
+    gst_caps_set_features(caps, 0, gst_caps_features_new_any());
     if (width > 0)
         gst_caps_set_simple(caps, "width", G_TYPE_INT, width, NULL);
     if (height > 0)
@@ -334,6 +502,12 @@ static GstCaps *owr_video_renderer_get_caps(OwrMediaRenderer *renderer)
     return caps;
 }
 
+static GstElement *owr_video_renderer_get_sink(OwrMediaRenderer *renderer)
+{
+    OWR_UNUSED(renderer);
+    return gst_element_factory_make(VIDEO_SINK, "video-renderer-sink");
+}
+
 void _owr_video_renderer_notify_tag_changed(OwrVideoRenderer *video_renderer, const gchar *tag, gboolean have_handle, guintptr new_handle)
 {
     OwrVideoRendererPrivate *priv;
@@ -342,10 +516,11 @@ void _owr_video_renderer_notify_tag_changed(OwrVideoRenderer *video_renderer, co
     g_return_if_fail(tag);
 
     priv = video_renderer->priv;
-    g_return_if_fail(priv->tag && strcmp(priv->tag, tag) == 0);
+    g_return_if_fail(priv->tag && !strcmp(priv->tag, tag));
 
     _owr_media_renderer_set_sink(OWR_MEDIA_RENDERER(video_renderer), NULL);
-    if (have_handle)
+    if (have_handle) {
         _owr_media_renderer_set_sink(OWR_MEDIA_RENDERER(video_renderer),
             owr_video_renderer_get_element(OWR_MEDIA_RENDERER(video_renderer), new_handle));
+    }
 }

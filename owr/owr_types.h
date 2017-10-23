@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -55,6 +57,11 @@ typedef enum _OwrSourceType {
     OWR_SOURCE_TYPE_TEST
 } OwrSourceType;
 
+typedef enum _OwrAdaptationType {
+    OWR_ADAPTATION_TYPE_DISABLED,
+    OWR_ADAPTATION_TYPE_SCREAM
+} OwrAdaptationType;
+
 #define OWR_TYPE_CODEC_TYPE (owr_codec_type_get_type())
 GType owr_codec_type_get_type(void);
 
@@ -63,6 +70,10 @@ GType owr_source_type_get_type(void);
 
 #define OWR_TYPE_MEDIA_TYPE (owr_media_type_get_type())
 GType owr_media_type_get_type(void);
+
+#define OWR_TYPE_ADAPTATION_TYPE (owr_adaptation_type_get_type())
+GType owr_adaptation_type_get_type(void);
+
 
 G_END_DECLS
 

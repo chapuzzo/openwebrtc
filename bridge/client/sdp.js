@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 Ericsson AB. All rights reserved.
+ * Copyright (C) 2014-2015 Ericsson AB. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -41,21 +41,26 @@ if (typeof(SDP) == "undefined")
         "mblock": "^m=(audio|video|application) ([\\d]+) ([A-Z/]+)([\\d ]*)$\\r?\\n",
         "mode": "^a=(sendrecv|sendonly|recvonly|inactive).*$",
         "rtpmap": "^a=rtpmap:${type} ([\\w\\-]+)/([\\d]+)/?([\\d]+)?.*$",
+        "fmtp": "^a=fmtp:${type} ([\\w\\-=; ]+).*$",
+        "param": "([\\w\\-]+)=([\\w\\-]+);?",
         "nack": "^a=rtcp-fb:${type} nack$",
         "nackpli": "^a=rtcp-fb:${type} nack pli$",
         "ccmfir": "^a=rtcp-fb:${type} ccm fir$",
+        "ericscream": "^a=rtcp-fb:${type} ericscream$",
         "rtcp": "^a=rtcp:([\\d]+)( IN (IP[46]) ([\\d\\.a-f\\:]+))?.*$",
         "rtcpmux": "^a=rtcp-mux.*$",
-        "cname": "^a=ssrc:(\\d+) cname:([\\w+/\\-@\\.]+).*$",
+        "cname": "^a=ssrc:(\\d+) cname:([\\w+/\\-@\\.\\{\\}]+).*$",
         "msid": "^a=(ssrc:\\d+ )?msid:([\\w+/\\-=]+) +([\\w+/\\-=]+).*$",
         "ufrag": "^a=ice-ufrag:([\\w+/]*).*$",
         "pwd": "^a=ice-pwd:([\\w+/]*).*$",
+        "iceoptions": "^a=ice-options:(.*$)",
+        "trickle": "\\btrickle\\b.*$",
         "candidate": "^a=candidate:(\\d+) (\\d) (UDP|TCP) ([\\d\\.]*) ([\\d\\.a-f\\:]*) (\\d*)" +
             " typ ([a-z]*)( raddr ([\\d\\.a-f\\:]*) rport (\\d*))?" +
             "( tcptype (active|passive|so))?.*$",
         "fingerprint": "^a=fingerprint:(sha-1|sha-256) ([A-Fa-f\\d\:]+).*$",
         "setup": "^a=setup:(actpass|active|passive).*$",
-        "sctpmap": "^a=sctpmap:${port} ([\\w\\-]+)( [\\d]{3,})?( [\\d]+)?.*$"
+        "sctpmap": "^a=sctpmap:${port} ([\\w\\-]+)( [\\d]+)?.*$"
     };
 
     var templates = {
@@ -75,12 +80,15 @@ if (typeof(SDP) == "undefined")
             "${rtcpMuxLine}" +
             "a=${mode}\r\n" +
             "${rtpMapLines}" +
+            "${fmtpLines}" +
             "${nackLines}" +
             "${nackpliLines}" +
             "${ccmfirLines}" +
+            "${ericScreamLines}" +
             "${cnameLines}" +
             "${msidLines}" +
             "${iceCredentialLines}" +
+            "${iceOptionLine}" +
             "${candidateLines}" +
             "${dtlsFingerprintLine}" +
             "${dtlsSetupLine}" +
@@ -90,16 +98,21 @@ if (typeof(SDP) == "undefined")
         "rtcpMux": "a=rtcp-mux\r\n",
 
         "rtpMap": "a=rtpmap:${type} ${encodingName}/${clockRate}${[/]channels}\r\n",
+        "fmtp": "a=fmtp:${type} ${parameters}\r\n",
         "nack": "a=rtcp-fb:${type} nack\r\n",
         "nackpli": "a=rtcp-fb:${type} nack pli\r\n",
         "ccmfir": "a=rtcp-fb:${type} ccm fir\r\n",
+        "ericscream": "a=rtcp-fb:${type} ericscream\r\n",
 
         "cname": "a=ssrc:${ssrc} cname:${cname}\r\n",
-        "msid": "a=${[ssrc:]ssrc[ ]}msid:${mediaStreamId} ${mediaStreamTrackId}\r\n",
+        "msid": "a=msid:${mediaStreamId} ${mediaStreamTrackId}\r\n",
 
         "iceCredentials":
             "a=ice-ufrag:${ufrag}\r\n" +
             "a=ice-pwd:${password}\r\n",
+
+        "iceOptionsTrickle":
+            "a=ice-options:trickle\r\n",
 
         "candidate":
             "a=candidate:${foundation} ${componentId} ${transport} ${priority} ${address} ${port}" +
@@ -108,7 +121,7 @@ if (typeof(SDP) == "undefined")
         "dtlsFingerprint": "a=fingerprint:${fingerprintHashFunction} ${fingerprint}\r\n",
         "dtlsSetup": "a=setup:${setup}\r\n",
 
-        "sctpmap": "a=sctpmap:${port} ${app}${[ ]maxMessageSize}${[ ]streams}\r\n"
+        "sctpmap": "a=sctpmap:${port} ${app}${[ ]streams}\r\n"
     };
 
     function match(data, pattern, flags, alt) {
@@ -154,7 +167,7 @@ if (typeof(SDP) == "undefined")
         if (originator) {
             sdpObj.originator = {
                 "username": originator[1],
-                "sessionId": parseInt(originator[2]),
+                "sessionId": originator[2],
                 "sessionVersion": parseInt(originator[3]),
                 "netType": "IN",
                 "addressType": originator[4],
@@ -175,12 +188,14 @@ if (typeof(SDP) == "undefined")
         for (var i = 0; i < parts.length; i += 5) {
             var mediaDescription = {
                 "type": parts[i],
-                "port": parts[i + 1],
+                "port": parseInt(parts[i + 1]),
                 "protocol": parts[i + 2],
             };
-            var fmt = parts[i + 3].trimLeft().split(/ +/).map(function (x) {
-                return parseInt(x);
-            });
+            var fmt = parts[i + 3].replace(/^[\s\uFEFF\xA0]+/, '')
+                .split(/ +/)
+                .map(function (x) {
+                    return parseInt(x);
+                });
             var mblock = parts[i + 4];
 
             var connection = match(mblock, regexps.cline, "m", sblock);
@@ -194,7 +209,7 @@ if (typeof(SDP) == "undefined")
                 mediaDescription.mode = mode[1];
 
             var payloadTypes = [];
-            if (match(mediaDescription.protocol, "RTP/S?AVPF?")) {
+            if (match(mediaDescription.protocol, "(UDP/TLS)?RTP/S?AVPF?")) {
                 mediaDescription.payloads = [];
                 payloadTypes = fmt;
             }
@@ -214,11 +229,25 @@ if (typeof(SDP) == "undefined")
                         payload.nackpli = !!match(mblock, nackpliLine, "m");
                         var ccmfirLine = fillTemplate(regexps.ccmfir, payload);
                         payload.ccmfir = !!match(mblock, ccmfirLine, "m");
+                        var ericScreamLine = fillTemplate(regexps.ericscream, payload);
+                        payload.ericscream = !!match(mblock, ericScreamLine, "m");
                     }
                 } else if (payloadType == 0 || payloadType == 8) {
                     payload.encodingName = payloadType == 8 ? "PCMA" : "PCMU";
                     payload.clockRate = 8000;
                     payload.channels = 1;
+                }
+                var fmtpLine = fillTemplate(regexps.fmtp, payload);
+                var fmtp = match(mblock, fmtpLine, "m");
+                if (fmtp) {
+                    payload.parameters = {};
+                    fmtp[1].replace(new RegExp(regexps.param, "g"),
+                        function(_, key, value) {
+                            key = key.replace(/-([a-z])/g, function (_, c) {
+                                return c.toUpperCase();
+                            });
+                            payload.parameters[key] = isNaN(+value) ? value : +value;
+                    });
                 }
                 mediaDescription.payloads.push(payload);
             });
@@ -265,13 +294,30 @@ if (typeof(SDP) == "undefined")
             if (ufrag && pwd) {
                 mediaDescription.ice = {
                     "ufrag": ufrag[1],
-                    "password": pwd[1]
+                    "password": pwd[1],
+                    "iceOptions": {}
                 };
+            }
+            var iceOptions = match(mblock, regexps.iceoptions, "m", sblock);
+            if (iceOptions) {
+                var canTrickle = match(iceOptions[1], regexps.trickle);
+                if (canTrickle) {
+                    if (!mediaDescription.ice) {
+                        mediaDescription.ice = {
+                            "iceOptions": {}
+                        };
+                    }
+                    mediaDescription.ice.iceOptions = {
+                        "trickle": true
+                    };
+                }
             }
             var candidateLines = match(mblock, regexps.candidate, "mig");
             if (candidateLines) {
                 if (!mediaDescription.ice)
-                    mediaDescription.ice = {};
+                    mediaDescription.ice = {
+                        "iceOptions": {}
+                    };
                 mediaDescription.ice.candidates = [];
                 candidateLines.forEach(function (line) {
                     var candidateLine = match(line, regexps.candidate, "mi");
@@ -294,6 +340,8 @@ if (typeof(SDP) == "undefined")
                         if (candidate.port == 0 || candidate.port == 9) {
                             candidate.tcpType = "active";
                             candidate.port = 9;
+                        } else {
+                            return;
                         }
                     }
                     mediaDescription.ice.candidates.push(candidate);
@@ -323,9 +371,7 @@ if (typeof(SDP) == "undefined")
                 if (sctpmap) {
                     mediaDescription.sctp.app = sctpmap[1];
                     if (sctpmap[2])
-                        mediaDescription.sctp.maxMessageSize = parseInt(sctpmap[2]);
-                    if (sctpmap[3])
-                        mediaDescription.sctp.streams = parseInt(sctpmap[3]);
+                        mediaDescription.sctp.streams = parseInt(sctpmap[2]);
                 }
             }
 
@@ -347,7 +393,7 @@ if (typeof(SDP) == "undefined")
         });
         addDefaults(sdpObj.originator, {
             "username": "-",
-            "sessionId": Math.floor((Math.random() + +new Date()) * 1e6),
+            "sessionId": "" + Math.floor((Math.random() + +new Date()) * 1e6),
             "sessionVersion": 1,
             "netType": "IN",
             "addressType": "IP4",
@@ -364,15 +410,15 @@ if (typeof(SDP) == "undefined")
                 mediaStreamIds.push(mdesc.mediaStreamId);
         });
         if (mediaStreamIds.length) {
-            var msidsemanticLine = fillTemplate(templates.msidsemantic,
+            msidsemanticLine = fillTemplate(templates.msidsemantic,
                 { "mediaStreamIds": mediaStreamIds.join(" ") });
         }
         sdpText = fillTemplate(sdpText, { "msidsemanticLine": msidsemanticLine });
 
         sdpObj.mediaDescriptions.forEach(function (mediaDescription) {
             addDefaults(mediaDescription, {
-                "port": 1,
-                "protocol": "RTP/SAVPF",
+                "port": 9,
+                "protocol": "UDP/TLS/RTP/SAVPF",
                 "netType": "IN",
                 "addressType": "IP4",
                 "address": "0.0.0.0",
@@ -382,8 +428,8 @@ if (typeof(SDP) == "undefined")
             });
             var mblock = fillTemplate(templates.mblock, mediaDescription);
 
-            var payloadInfo = {"rtpMapLines": "", "nackLines": "",
-                "nackpliLines": "", "ccmfirLines": ""};
+            var payloadInfo = {"rtpMapLines": "", "fmtpLines": "", "nackLines": "",
+                "nackpliLines": "", "ccmfirLines": "", "ericScreamLines": ""};
             mediaDescription.payloads.forEach(function (payload) {
                 if (payloadInfo.fmt)
                     payloadInfo.fmt += " " + payload.type;
@@ -392,12 +438,26 @@ if (typeof(SDP) == "undefined")
                 if (!payload.channels || payload.channels == 1)
                     payload.channels = null;
                 payloadInfo.rtpMapLines += fillTemplate(templates.rtpMap, payload);
+                if (payload.parameters) {
+                    var fmtpInfo = { "type": payload.type, "parameters": "" };
+                    for (var p in payload.parameters) {
+                        var param = p.replace(/([A-Z])([a-z])/g, function (_, a, b) {
+                            return "-" + a.toLowerCase() + b;
+                        });
+                        if (fmtpInfo.parameters)
+                            fmtpInfo.parameters += ";";
+                        fmtpInfo.parameters += param + "=" + payload.parameters[p];
+                    }
+                    payloadInfo.fmtpLines += fillTemplate(templates.fmtp, fmtpInfo);
+                }
                 if (payload.nack)
                     payloadInfo.nackLines += fillTemplate(templates.nack, payload);
                 if (payload.nackpli)
                     payloadInfo.nackpliLines += fillTemplate(templates.nackpli, payload);
                 if (payload.ccmfir)
                     payloadInfo.ccmfirLines += fillTemplate(templates.ccmfir, payload);
+                if (payload.ericscream)
+                    payloadInfo.ericScreamLines += fillTemplate(templates.ericscream, payload);
             });
             mblock = fillTemplate(mblock, payloadInfo);
 
@@ -435,10 +495,12 @@ if (typeof(SDP) == "undefined")
             }
             mblock = fillTemplate(mblock, srcAttributeLines);
 
-            var iceInfo = {"iceCredentialLines": "", "candidateLines": ""};
+            var iceInfo = {"iceCredentialLines": "", "iceOptionLine": "", "candidateLines": ""};
             if (mediaDescription.ice) {
                 iceInfo.iceCredentialLines = fillTemplate(templates.iceCredentials,
                     mediaDescription.ice);
+                if (mediaDescription.ice.iceOptions && mediaDescription.ice.iceOptions.trickle)
+                    iceInfo.iceOptionLine = templates.iceOptionsTrickle;
                 if (mediaDescription.ice.candidates) {
                     mediaDescription.ice.candidates.forEach(function (candidate) {
                         addDefaults(candidate, {
@@ -465,7 +527,7 @@ if (typeof(SDP) == "undefined")
 
             var sctpInfo = {"sctpmapLine": "", "fmt": ""};
             if (mediaDescription.sctp) {
-                addDefaults(mediaDescription.sctp, {"maxMessageSize": null, "streams": null});
+                addDefaults(mediaDescription.sctp, {"streams": null});
                 sctpInfo.sctpmapLine = fillTemplate(templates.sctpmap, mediaDescription.sctp);
                 sctpInfo.fmt = mediaDescription.sctp.port;
             }

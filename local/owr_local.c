@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2014, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014-2015, Ericsson AB. All rights reserved.
+ * Copyright (c) 2014, Centricular Ltd
+ *     Author: Sebastian Dröge <sebastian@centricular.com>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -32,11 +34,16 @@
 #endif
 #include "owr_local.h"
 
+#include "owr_device_list_private.h"
 #include "owr_local_media_source.h"
 #include "owr_local_media_source_private.h"
 #include "owr_media_source.h"
 #include "owr_media_source_private.h"
 #include "owr_private.h"
+#include "owr_utils.h"
+
+GST_DEBUG_CATEGORY_EXTERN(_owrlocal_debug);
+#define GST_CAT_DEFAULT _owrlocal_debug
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -51,7 +58,7 @@
 
 /* PRIVATE */
 
-static GList *get_capture_sources(OwrMediaType types)
+static GList *get_test_sources(OwrMediaType types)
 {
     static GList *cached_sources = NULL;
     OwrLocalMediaSource *source;
@@ -62,31 +69,12 @@ static GList *get_capture_sources(OwrMediaType types)
     if (g_once_init_enter(&cached_sources)) {
         GList *sources = NULL;
 
-        /* FIXME: This code makes no sense at all, we shouldn't hardcode
-         * capture sources but check what is available. Not everybody has
-         * /dev/video0 and /dev/video1, and not always are they camera
-         * sources...
-         * Use GstDeviceMonitor here! */
-        source = _owr_local_media_source_new("Audio capture source", OWR_MEDIA_TYPE_AUDIO,
-            OWR_SOURCE_TYPE_CAPTURE);
-        sources = g_list_append(sources, OWR_MEDIA_SOURCE(source));
-        source = _owr_local_media_source_new("Video capture source", OWR_MEDIA_TYPE_VIDEO,
-            OWR_SOURCE_TYPE_CAPTURE);
-        _owr_local_media_source_set_capture_device_index(source, PRIMARY_VIDEO_DEVICE_INDEX);
-        sources = g_list_append(sources, OWR_MEDIA_SOURCE(source));
-        source = _owr_local_media_source_new("Video capture source", OWR_MEDIA_TYPE_VIDEO,
-            OWR_SOURCE_TYPE_CAPTURE);
-        _owr_local_media_source_set_capture_device_index(source, SECONDARY_VIDEO_DEVICE_INDEX);
+        source = _owr_local_media_source_new_cached(-1, "Audio test source", OWR_MEDIA_TYPE_AUDIO, OWR_SOURCE_TYPE_TEST);
         sources = g_list_append(sources, OWR_MEDIA_SOURCE(source));
 
-        if (g_getenv("OWR_USE_TEST_SOURCES")) {
-            source = _owr_local_media_source_new("Video test source", OWR_MEDIA_TYPE_VIDEO,
-                OWR_SOURCE_TYPE_TEST);
-            sources = g_list_append(sources, OWR_MEDIA_SOURCE(source));
-            source = _owr_local_media_source_new("Audio test source", OWR_MEDIA_TYPE_AUDIO,
-                OWR_SOURCE_TYPE_TEST);
-            sources = g_list_append(sources, OWR_MEDIA_SOURCE(source));
-        }
+        source = _owr_local_media_source_new_cached(-1, "Video test source", OWR_MEDIA_TYPE_VIDEO, OWR_SOURCE_TYPE_TEST);
+        sources = g_list_append(sources, OWR_MEDIA_SOURCE(source));
+
         g_once_init_leave(&cached_sources, sources);
     }
 
@@ -114,31 +102,6 @@ static GList *get_capture_sources(OwrMediaType types)
  */
 
 
-/* wrapper function to always only call the callback once */
-static gboolean capture_sources_callback(GHashTable *args)
-{
-    OwrCaptureSourcesCallback *callbacks;
-    OwrMediaType media_types;
-    GList *capture_sources;
-    gpointer user_data;
-
-    g_return_val_if_fail(args, FALSE);
-
-    callbacks = g_hash_table_lookup(args, "callback");
-    media_types = GPOINTER_TO_UINT(g_hash_table_lookup(args, "media_types"));
-    user_data = g_hash_table_lookup(args, "user_data");
-
-    capture_sources = get_capture_sources(media_types);
-    callbacks[0](capture_sources, user_data);
-    g_list_free_full(capture_sources, (GDestroyNotify) g_object_unref);
-
-    g_free(callbacks);
-    g_hash_table_unref(args);
-
-    return FALSE;
-}
-
-
 /* PUBLIC */
 
 /**
@@ -149,17 +112,30 @@ static gboolean capture_sources_callback(GHashTable *args)
  */
 void owr_get_capture_sources(OwrMediaType types, OwrCaptureSourcesCallback callback, gpointer user_data)
 {
-    GHashTable *args;
-    OwrCaptureSourcesCallback *callbacks;
+    GClosure *closure;
+    GClosure *merger;
 
     g_return_if_fail(callback);
 
-    callbacks = g_new(OwrCaptureSourcesCallback, 1);
-    callbacks[0] = callback;
-    args = g_hash_table_new(g_str_hash, g_str_equal);
-    g_hash_table_insert(args, "callback", callbacks);
-    g_hash_table_insert(args, "media_types", GUINT_TO_POINTER(types));
-    g_hash_table_insert(args, "user_data", user_data);
+    closure = g_cclosure_new(G_CALLBACK(callback), user_data, NULL);
+    g_closure_set_marshal(closure, g_cclosure_marshal_generic);
 
-    _owr_schedule_with_hash_table((GSourceFunc)capture_sources_callback, args);
+    if (g_getenv("OWR_USE_TEST_SOURCES")) {
+        GList *sources;
+
+        merger = _owr_utils_list_closure_merger_new(closure,
+            (GCopyFunc) g_object_ref,
+            (GDestroyNotify) g_object_unref);
+
+        g_closure_ref(merger);
+        _owr_get_capture_devices(types, merger);
+
+        g_closure_ref(merger);
+        sources = get_test_sources(types);
+        _owr_utils_call_closure_with_list(merger, sources);
+        g_list_free_full(sources, g_object_unref);
+
+        g_closure_unref(merger);
+    } else
+        _owr_get_capture_devices(types, closure);
 }
